@@ -79,7 +79,7 @@ st.set_page_config(
 #     st.error("OPENAI_API_KEY not found. Add it to your .env at project root.")
 #     st.stop()
 
-client = OpenAI(api_key=api_key)
+# client = OpenAI(api_key=api_key)
 
 # Initialize DB (creates tables if not exist)
 init_db()
