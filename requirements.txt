@@ -1,0 +1,9 @@
+faiss-cpu
+python-docx
+streamlit
+python-dotenv
+openai>=1.0.0
+bcrypt
+pandas
+numpy
+

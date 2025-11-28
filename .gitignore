@@ -3,3 +3,13 @@ venv/
 *.pyc
 __pycache__/
 *.egg-info/
+
+# env & caches
+.env
+.venv*
+__pycache__/
+*.pyc
+
+# local DBs / logs (keep RAG artifacts if you want them versioned)
+srp_chatbot.db
+*.log

@@ -4,18 +4,56 @@ import time
 import json
 from typing import Dict, Any
 from datetime import datetime
+import bcrypt
+import pandas as pd
 
 from dotenv import load_dotenv
 import streamlit as st
 from openai import OpenAI
 import sqlite3
 
+import sys, os
+_HERE = os.path.dirname(__file__)
+_ROOT = os.path.dirname(_HERE)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from kb_runtime import retrieve_context
 from config import EQUITYPAY_LINKS, KNOWLEDGE_NOTE
-from db_utils import init_db, log_chat_interaction, log_user_chat_interaction, create_user, DB_PATH
+from db_utils import init_db, log_chat_interaction, log_user_chat_interaction, create_user, fetch_user_chat_history, DB_PATH
 
 # -------------------------------------------------------------------
 # Environment & OpenAI client
 # -------------------------------------------------------------------
+def _is_bcrypt_hash(s: str) -> bool:
+    return isinstance(s, str) and s.startswith("$2") and len(s) >= 40
+
+
+def _fetch_logs(table: str, limit: int = 50):
+    cols = {
+        "chat_logs": """id, created_at, language, intent, needs_escalation, portal_link_key,
+                        user_message, assistant_message, response_time_ms""",
+        "user_chat_logs": """id, created_at, language, intent, needs_escalation, portal_link_key,
+                             user_name, user_email, user_message, assistant_message, response_time_ms"""
+    }
+    q = f"SELECT {cols[table]} FROM {table} ORDER BY id DESC LIMIT ?;"
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(q, (limit,))
+    rows = cur.fetchall()
+    headers = [c.strip() for c in cols[table].split(",")]
+    conn.close()
+    return headers, rows
+
+def fetch_df(table: str, limit: int) -> pd.DataFrame:
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(f"SELECT * FROM {table} ORDER BY id DESC LIMIT ?;", (limit,))
+    rows = cur.fetchall()
+    cols = [d[0] for d in cur.description]  # <- real column names from SQLite
+    conn.close()
+    return pd.DataFrame(rows, columns=cols)
+
 
 for k in list(os.environ.keys()):
     if "PROXY" in k.upper() or k in ("OPENAI_PROXY", "OPENAI_HTTP_PROXY"):
@@ -62,8 +100,34 @@ conn.close()
 
 st.sidebar.title("SRP Assistant")
 st.sidebar.markdown(
-    "Privacy Notice: No personal identifiers allowed. Only general billing and insurance guidance will be provided."
+    "⚠️ Privacy Notice: No personal identifiers allowed. Only general billing and insurance guidance will be provided."
 )
+
+# Show session status if authenticated
+if st.session_state.get("user_email"):
+    st.sidebar.success(f"Logged in as: {st.session_state.get('user_name','User')}")
+
+    # --- Logout button (shown only when logged in) ---
+    if st.sidebar.button("Logout"):
+        # clear auth + any open forms
+        st.session_state.pop("user_name", None)
+        st.session_state.pop("user_email", None)
+        st.session_state.show_login_form = False
+        st.session_state.show_create_form = False
+
+        # (optional) also clear chat history on logout:
+        # st.session_state.pop("messages", None)
+
+        st.rerun()
+else:
+    # Auth buttons only when NOT logged in
+    if st.sidebar.button("Login"):
+        st.session_state.show_login_form = True
+        st.session_state.show_create_form = False
+    if st.sidebar.button("Create Account"):
+        st.session_state.show_create_form = True
+        st.session_state.show_login_form = False
+
 
 lang = st.sidebar.radio("Language / Idioma", options=["English", "Español"], index=0)
 
@@ -75,12 +139,13 @@ if "show_login_form" not in st.session_state:
 if "show_create_form" not in st.session_state:
     st.session_state.show_create_form = False
 
-if st.sidebar.button("Login"):
-    st.session_state.show_login_form = True
-    st.session_state.show_create_form = False
-if st.sidebar.button("Create Account"):
-    st.session_state.show_create_form = True
-    st.session_state.show_login_form = False
+# if not st.session_state.get("user_email"):
+#     if st.sidebar.button("Login"):
+#         st.session_state.show_login_form = True
+#         st.session_state.show_create_form = False
+#     if st.sidebar.button("Create Account"):
+#         st.session_state.show_create_form = True
+#         st.session_state.show_login_form = False
 
 # -------------------------------------------------------------------
 # Auth Forms
@@ -114,13 +179,54 @@ if st.session_state.show_login_form:
         if row is None:
             st.sidebar.error("No user found with these details.")
         else:
-            real_pass = row[0]
-            if real_pass == user_password:
+            stored_hash = row[0]
+            ok = False
+            rehash = False
+
+            if _is_bcrypt_hash(stored_hash):
+                # New accounts (bcrypt)
+                ok = bcrypt.checkpw(user_password.encode("utf-8"), stored_hash.encode("utf-8"))
+            else:
+                # Legacy accounts (plain text stored) — compare directly, then migrate
+                ok = (stored_hash == user_password)
+                rehash = ok
+
+            if ok:
+                # If legacy, upgrade to bcrypt now
+                if rehash:
+                    try:
+                        new_hash = bcrypt.hashpw(user_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+                        conn = sqlite3.connect(DB_PATH)
+                        cur = conn.cursor()
+                        cur.execute(
+                            "UPDATE users SET user_password = ? WHERE user_email = ? AND user_name = ?;",
+                            (new_hash, user_email, user_name),
+                        )
+                        conn.commit()
+                        conn.close()
+                    except Exception:
+                        pass  # login still proceeds even if migration update fails
+
                 st.session_state.user_name = user_name
                 st.session_state.user_email = user_email
+
+                # >>> hydrate prior chats <<<
+                rows = fetch_user_chat_history(user_email, limit=200)
+                st.session_state.messages = []
+                for _, user_m, asst_m in rows:
+                    if user_m:
+                        st.session_state.messages.append({"role": "user", "content": user_m})
+                    if asst_m:
+                        st.session_state.messages.append({"role": "assistant", "content": asst_m})
+                st.session_state.history_loaded_for = user_email
+                # <<< hydrate prior chats >>>
+
                 st.toast("Authenticated")
+                st.session_state.show_login_form = False
+                st.session_state.show_create_form = False
             else:
                 st.sidebar.error("Incorrect password")
+
 
 # Create Account
 if st.session_state.show_create_form:
@@ -150,6 +256,9 @@ if st.session_state.show_create_form:
             st.session_state.user_name = new_name
             st.session_state.user_email = new_email
             st.toast("Authenticated")
+            st.session_state.show_login_form = False
+            st.session_state.show_create_form = False
+
 
 
 # -------------------------------------------------------------------
@@ -319,10 +428,24 @@ if user_msg:
     else:
         api_start = time.time()
         try:
+            use_rag = intent not in ["payment_help", "portal_navigation", "sensitive_info"]
+
+            # fetch up to 3 helpful snippets
+            kb_chunks = retrieve_context(user_msg, k=3) if use_rag else []
+            kb_context = "\n\n".join(f"- {c}" for c in kb_chunks) if kb_chunks else ""
+
+            # build system prompt with optional KB context
+            base_system = SYSTEM
+            if kb_context:
+                base_system += (
+                    "\n\nYou also have the following notes from SRP’s billing/insurance guide. "
+                    "Use them to keep answers accurate and concrete. Do not invent facts.\n"
+                    f"{kb_context}\n"
+                )
             llm = client.chat.completions.create(
                 model="gpt-4o-mini",
                 temperature=0.3,
-                messages=[{"role":"system","content":SYSTEM}] + st.session_state.messages,
+                messages=[{"role":"system","content":base_system}] + st.session_state.messages,
             )
             assistant_text = llm.choices[0].message.content
         except Exception as e:
@@ -372,3 +495,36 @@ if st.sidebar.button("View row count"):
     user_count = cur.fetchone()[0]
     conn.close()
     st.sidebar.markdown(f"chat_logs rows: {general_count}\nusers rows: {user_count}")
+
+
+st.sidebar.markdown("---")
+with st.sidebar.expander("Admin: Recent Logs", expanded=False):
+    table = st.selectbox(
+        "Table",
+        ["chat_logs", "user_chat_logs"],   # avoid exporting the users table
+        index=0,
+        key="tbl_sel"
+    )
+    limit = st.number_input("How many rows?", min_value=10, max_value=500, value=50, step=10, key="row_lim")
+
+    if st.button("Show logs", key="show_logs_btn"):
+        df = fetch_df(table, int(limit))
+        st.session_state["admin_df"] = df
+        st.session_state["admin_df_table"] = table
+
+    df = st.session_state.get("admin_df")
+    shown_from = st.session_state.get("admin_df_table")
+
+    if df is not None and shown_from == table:
+        st.caption(f"Last {len(df)} rows from `{table}`")
+        st.dataframe(df, use_container_width=True)
+
+        csv_bytes = df.to_csv(index=False).encode("utf-8")  # headers + no numeric index
+        fname = datetime.now().strftime(f"%Y-%m-%dT%H-%M_export_{table}.csv")
+        st.download_button(
+            "Download CSV",
+            data=csv_bytes,
+            file_name=fname,
+            mime="text/csv",
+            key="dl_logs_btn"
+        )

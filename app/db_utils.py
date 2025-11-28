@@ -175,3 +175,25 @@ def log_user_chat_interaction(
 
     conn.commit()
     conn.close()
+
+
+def fetch_user_chat_history(user_email: str, limit: int = 100):
+    """
+    Return a user's prior chat history (oldest → newest) for reconstructing the chat UI.
+    Each row = (created_at, user_message, assistant_message)
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT created_at, user_message, assistant_message
+        FROM user_chat_logs
+        WHERE user_email = ?
+        ORDER BY datetime(created_at) ASC
+        LIMIT ?;
+        """,
+        (user_email, limit),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
