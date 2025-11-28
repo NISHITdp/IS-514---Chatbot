@@ -18,6 +18,13 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+API_KEY = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+if not API_KEY:
+    st.error("OPENAI_API_KEY is missing. Add it in Streamlit > Settings > Secrets.")
+    st.stop()
+client = OpenAI(api_key=API_KEY)
+
+
 from kb_runtime import retrieve_context
 from config import EQUITYPAY_LINKS, KNOWLEDGE_NOTE
 from db_utils import init_db, log_chat_interaction, log_user_chat_interaction, create_user, fetch_user_chat_history, DB_PATH
@@ -59,8 +66,8 @@ for k in list(os.environ.keys()):
     if "PROXY" in k.upper() or k in ("OPENAI_PROXY", "OPENAI_HTTP_PROXY"):
         os.environ.pop(k, None)
 
-load_dotenv()
-api_key = os.getenv("OPENAI_API_KEY")
+# load_dotenv()
+# api_key = os.getenv("OPENAI_API_KEY")
 
 st.set_page_config(
     page_title="SRP Billing Assistant (MVP)",
@@ -68,9 +75,9 @@ st.set_page_config(
     layout="centered",
 )
 
-if not api_key:
-    st.error("OPENAI_API_KEY not found. Add it to your .env at project root.")
-    st.stop()
+# if not api_key:
+#     st.error("OPENAI_API_KEY not found. Add it to your .env at project root.")
+#     st.stop()
 
 client = OpenAI(api_key=api_key)
 

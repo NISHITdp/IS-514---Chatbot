@@ -5,12 +5,19 @@ from typing import List, Tuple, Optional
 
 import numpy as np
 import faiss
-from dotenv import load_dotenv
+#from dotenv import load_dotenv
 from openai import OpenAI
+import streamlit as st
+
 
 # ---- OpenAI ----
-load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# load_dotenv()
+# client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+API_KEY = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+if not API_KEY:
+    raise RuntimeError("OPENAI_API_KEY is missing. Add it in Streamlit > Settings > Secrets.")
+client = OpenAI(api_key=API_KEY)
 
 # ---- Paths (we use ./data) ----
 HERE = os.path.dirname(os.path.abspath(__file__))
