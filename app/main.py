@@ -11,6 +11,16 @@ from dotenv import load_dotenv
 import streamlit as st
 from openai import OpenAI
 import sqlite3
+load_dotenv() 
+
+# Mic widget (pip install streamlit-mic-recorder)
+try:
+    from streamlit_mic_recorder import speech_to_text, mic_recorder
+except Exception as e:
+    speech_to_text = None
+    mic_recorder = None
+    st.sidebar.warning(f"Mic widget not available: {e}")
+
 
 import sys, os
 _HERE = os.path.dirname(__file__)
@@ -18,11 +28,26 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-API_KEY = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+
+api_env = os.getenv("OPENAI_API_KEY")
+
+try:
+    api_secret = st.secrets["OPENAI_API_KEY"] 
+except Exception:
+    api_secret = None
+
+API_KEY = api_env or api_secret
 if not API_KEY:
-    st.error("OPENAI_API_KEY is missing. Add it in Streamlit > Settings > Secrets.")
+    st.error("OPENAI_API_KEY is missing. Set it in .env (local) or in Streamlit ➜ App settings ➜ Secrets.")
     st.stop()
+
 client = OpenAI(api_key=API_KEY)
+
+# API_KEY = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+# if not API_KEY:
+#     st.error("OPENAI_API_KEY is missing. Add it in Streamlit > Settings > Secrets.")
+#     st.stop()
+# client = OpenAI(api_key=API_KEY)
 
 
 from kb_runtime import retrieve_context
@@ -382,7 +407,45 @@ for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
 
-user_msg = st.chat_input("Ask me anything about your bill or insurance...")
+# user_msg = st.chat_input("Ask me anything about your bill or insurance...")
+
+# ---------------- Chat Input (with optional mic) ----------------
+# session-state guards
+if "last_spoken" not in st.session_state:
+    st.session_state.last_spoken = None           # last transcribed phrase already handled
+if "pending_user" not in st.session_state:
+    st.session_state.pending_user = None          # one-shot buffer to process exactly once
+
+spoken = None
+if speech_to_text is not None:
+    st.caption("🎙️ Prefer speaking? Tap the mic, speak, then tap again to stop.")
+    spoken = speech_to_text(
+        language='es-ES' if lang == "Español" else 'en-US',
+        start_prompt="🎙️ Start talking",
+        stop_prompt="⏹️ Stop",
+        key="stt_widget",
+        use_container_width=True,
+    )
+
+# regular chat input (type-to-send)
+typed = st.chat_input("Ask me anything about your bill or insurance...", key="chat_input_main")
+
+# Debounce mic + unify into one input source
+if spoken and spoken.strip():
+    # Only accept if it's different from what we've already handled
+    if spoken != st.session_state.last_spoken:
+        st.session_state.pending_user = spoken
+        st.session_state.last_spoken = spoken
+
+if typed and typed.strip():
+    st.session_state.pending_user = typed
+
+# Pull the one-shot message to process below
+user_msg = st.session_state.pending_user
+# clear immediately so the same message won't re-fire on the next rerun
+st.session_state.pending_user = None
+# ---------------------------------------------------------------
+
 
 if user_msg:
     st.session_state.messages.append({"role": "user", "content": user_msg})

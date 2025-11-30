@@ -6,4 +6,4 @@ openai>=1.0.0
 bcrypt
 pandas
 numpy
-
+streamlit-mic-recorder
